@@ -1,0 +1,22 @@
+# Endpoint and autoscaling must be configured together because a single
+# config_hash drives the deregister → update → register → policy chain.
+# Any change to either section triggers the full sequence.
+
+# SageMaker Endpoint Configuration
+# Maps to CreateEndpoint, CreateModel, and CreateEndpointConfig APIs
+endpoint:
+  endpoint_name: ""                     # e.g. "my-model-endpoint"
+  image: ""                             # e.g. "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-xgboost:1.7-1"
+  model_data_url: ""                    # e.g. "s3://my-bucket/models/model.tar.gz"
+  instance_type: ""                     # e.g. "ml.m5.large"
+  initial_instance_count:               # e.g. 1
+  environment: {}                       # e.g. {"SAGEMAKER_MODEL_SERVER_WORKERS": "2"}
+
+# Autoscaling Configuration
+# Maps to RegisterScalableTarget and PutScalingPolicy APIs
+autoscaling:
+  min_capacity:                         # e.g. 1
+  max_capacity:                         # e.g. 10
+  target_value:                         # e.g. 100 (invocations per instance)
+  scale_in_cooldown:                    # e.g. 600 (seconds)
+  scale_out_cooldown:                   # e.g. 120 (seconds)

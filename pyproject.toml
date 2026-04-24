@@ -1,0 +1,16 @@
+[project]
+name = "sagemaker-autoscaling"
+version = "0.1.0"
+description = "CDK pattern to solve the circular dependency when updating a SageMaker endpoint with autoscaling"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib>=2.100.0,<2.200.0",
+    "constructs>=10.0.0,<11.0.0",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+]

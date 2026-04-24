@@ -1,22 +1,26 @@
-*.swp
-package-lock.json
-.pytest_cache
-*.egg-info
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Distribution / packaging
+*.egg-info/
+*.egg
 
 # Environments
 .env
 .venv
 env/
 venv/
-ENV/
-env.bak/
-venv.bak/
 
-# CDK Context & Staging files
+# CDK
 .cdk.staging/
 cdk.out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
