@@ -41,8 +41,8 @@ Edit `config/config.yaml` with your endpoint and autoscaling values.
 ## Deploy
 
 ```bash
-cdk bootstrap   # if not already bootstrapped
-cdk deploy InferenceStack
+uv run cdk bootstrap   # if not already bootstrapped
+uv run cdk deploy InferenceStack
 ```
 
 ## Verify
@@ -60,7 +60,7 @@ aws application-autoscaling describe-scaling-policies \
 ## Clean up
 
 ```bash
-cdk destroy InferenceStack
+uv run cdk destroy InferenceStack
 ```
 
 
