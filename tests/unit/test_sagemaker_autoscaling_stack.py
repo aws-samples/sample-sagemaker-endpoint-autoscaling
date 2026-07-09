@@ -15,7 +15,7 @@ TEST_CONFIG = {
     "endpoint": {
         "endpoint_name": "test-endpoint",
         "image": "123456789.dkr.ecr.us-east-1.amazonaws.com/test:latest",
-        "model_data_url": "s3://test-bucket/model.tar.gz",
+        "model_data_url": "s3://amzn-s3-demo-bucket/model.tar.gz",
         "instance_type": "ml.m5.large",
         "initial_instance_count": 1,
     },

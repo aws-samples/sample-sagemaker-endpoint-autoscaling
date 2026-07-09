@@ -4,6 +4,7 @@ from constructs import Construct
 from aws_cdk import (
     Duration,
     CustomResource,
+    Stack,
     aws_iam as iam,
     aws_lambda as _lambda,
     aws_sagemaker as sagemaker,
@@ -169,6 +170,9 @@ class SagemakerAutoscalingConstruct(Construct):
         resource_id = f"endpoint/{endpoint_name}/variant/AllTraffic"
         config = props.autoscaling
 
+        stack = Stack.of(self)
+        endpoint_arn = f"arn:{stack.partition}:sagemaker:{stack.region}:{stack.account}:endpoint/{endpoint_name}"
+
         autoscaling_policy = [
             iam.PolicyStatement(
                 actions=[
@@ -178,18 +182,28 @@ class SagemakerAutoscalingConstruct(Construct):
                     "application-autoscaling:DeleteScalingPolicy",
                     "application-autoscaling:DescribeScalableTargets",
                     "application-autoscaling:DescribeScalingPolicies",
-                    "cloudwatch:PutMetricAlarm",
-                    "cloudwatch:DeleteAlarms",
-                    "cloudwatch:DescribeAlarms",
+                ],
+                resources=["*"],  # Application Auto Scaling does not support resource-level permissions
+            ),
+            iam.PolicyStatement(
+                actions=[
                     "sagemaker:DescribeEndpoint",
                     "sagemaker:DescribeEndpointConfig",
                     "sagemaker:UpdateEndpointWeightsAndCapacities",
                 ],
-                resources=["*"],
+                resources=[endpoint_arn],
+            ),
+            iam.PolicyStatement(
+                actions=[
+                    "cloudwatch:PutMetricAlarm",
+                    "cloudwatch:DeleteAlarms",
+                    "cloudwatch:DescribeAlarms",
+                ],
+                resources=[f"arn:{stack.partition}:cloudwatch:{stack.region}:{stack.account}:alarm:TargetTracking-endpoint/{endpoint_name}/*"],
             ),
             iam.PolicyStatement(
                 actions=["iam:CreateServiceLinkedRole"],
-                resources=["*"],
+                resources=[f"arn:{stack.partition}:iam::{stack.account}:role/aws-service-role/sagemaker.application-autoscaling.amazonaws.com/*"],
                 conditions={
                     "StringEquals": {
                         "iam:AWSServiceName": "sagemaker.application-autoscaling.amazonaws.com"

@@ -31,12 +31,53 @@ class InferenceStack(Stack):
             if not asc.get(field):
                 raise ValueError(f"autoscaling.{field} must be set in config/config.yaml")
 
+        # Parse S3 bucket and ECR repo from config for least-privilege scoping
+        model_data_url = ep["model_data_url"]
+        s3_bucket = model_data_url.split("/")[2]
+        s3_key_prefix = "/".join(model_data_url.split("/")[3:])
+
+        image_uri = ep["image"]  # e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag
+        ecr_account = image_uri.split(".")[0]
+        ecr_region = image_uri.split(".")[3]
+        ecr_repo = image_uri.split("/")[1].split(":")[0]
+
         execution_role = iam.Role(
             self, "SagemakerExecutionRole",
             assumed_by=iam.ServicePrincipal("sagemaker.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSageMakerFullAccess"),
-            ],
+            inline_policies={
+                "SagemakerEndpointExecution": iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=[
+                                "s3:GetObject",
+                            ],
+                            resources=[f"arn:{self.partition}:s3:::{s3_bucket}/{s3_key_prefix}"],
+                        ),
+                        iam.PolicyStatement(
+                            actions=[
+                                "ecr:GetAuthorizationToken",
+                            ],
+                            resources=["*"],  # GetAuthorizationToken does not support resource-level permissions
+                        ),
+                        iam.PolicyStatement(
+                            actions=[
+                                "ecr:BatchCheckLayerAvailability",
+                                "ecr:GetDownloadUrlForLayer",
+                                "ecr:BatchGetImage",
+                            ],
+                            resources=[f"arn:{self.partition}:ecr:{ecr_region}:{ecr_account}:repository/{ecr_repo}"],
+                        ),
+                        iam.PolicyStatement(
+                            actions=[
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents",
+                            ],
+                            resources=[f"arn:{self.partition}:logs:{self.region}:{self.account}:log-group:/aws/sagemaker/Endpoints/{ep['endpoint_name']}*"],
+                        ),
+                    ]
+                ),
+            },
         )
 
         container_def = {
