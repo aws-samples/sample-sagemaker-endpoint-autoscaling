@@ -183,7 +183,7 @@ class SagemakerAutoscalingConstruct(Construct):
                     "application-autoscaling:DescribeScalableTargets",
                     "application-autoscaling:DescribeScalingPolicies",
                 ],
-                resources=["*"],  # Application Auto Scaling does not support resource-level permissions
+                resources=["*"],  # Scalable target ARN is not known until after registration
             ),
             iam.PolicyStatement(
                 actions=[
@@ -191,7 +191,10 @@ class SagemakerAutoscalingConstruct(Construct):
                     "sagemaker:DescribeEndpointConfig",
                     "sagemaker:UpdateEndpointWeightsAndCapacities",
                 ],
-                resources=[endpoint_arn],
+                resources=[
+                    endpoint_arn,
+                    f"arn:{stack.partition}:sagemaker:{stack.region}:{stack.account}:endpoint-config/*",
+                ],
             ),
             iam.PolicyStatement(
                 actions=[
@@ -199,7 +202,7 @@ class SagemakerAutoscalingConstruct(Construct):
                     "cloudwatch:DeleteAlarms",
                     "cloudwatch:DescribeAlarms",
                 ],
-                resources=[f"arn:{stack.partition}:cloudwatch:{stack.region}:{stack.account}:alarm:TargetTracking-endpoint/{endpoint_name}/*"],
+                resources=["*"],  # RegisterScalableTarget permission validation requires unscoped CloudWatch access
             ),
             iam.PolicyStatement(
                 actions=["iam:CreateServiceLinkedRole"],
