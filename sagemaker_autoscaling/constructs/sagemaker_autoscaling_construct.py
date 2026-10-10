@@ -24,7 +24,6 @@ class AutoscalingConfig:
 @dataclass
 class SagemakerAutoscalingProps:
     endpoint: sagemaker.CfnEndpoint
-    endpoint_config: sagemaker.CfnEndpointConfig
     autoscaling: AutoscalingConfig
     config_hash: str
 
@@ -54,43 +53,22 @@ def handler(event, context):
     return {"PhysicalResourceId": f"deregister-{resource_id}"}
 """
 
-REGISTER_CODE = """
-import time
+# on_event starts the lifecycle action and returns immediately; the framework
+# then polls is_complete on an interval until it reports IsComplete, bounded by
+# the provider's total_timeout. This keeps the whole wait inside the
+# CloudFormation deploy without a Lambda-bound polling loop.
+REGISTER_ON_EVENT_CODE = """
 import boto3
 
 as_client = boto3.client("application-autoscaling")
-sm_client = boto3.client("sagemaker")
-
-def wait_for_in_service(endpoint_name):
-    for _ in range(60):
-        resp = sm_client.describe_endpoint(EndpointName=endpoint_name)
-        status = resp["EndpointStatus"]
-        print(f"Endpoint {endpoint_name} status: {status}")
-        if status == "InService":
-            return
-        if status == "Failed":
-            raise Exception("Endpoint in Failed state")
-        time.sleep(10)
-    raise Exception("Timed out waiting for endpoint InService")
 
 def handler(event, context):
     props = event["ResourceProperties"]
     resource_id = props["ResourceId"]
-    endpoint_name = resource_id.split("/")[1]
     request_type = event["RequestType"]
     print(f"Request type: {request_type}, ResourceId: {resource_id}")
 
-    if request_type in ("Create", "Update"):
-        wait_for_in_service(endpoint_name)
-        as_client.register_scalable_target(
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
-            MinCapacity=int(props["MinCapacity"]),
-            MaxCapacity=int(props["MaxCapacity"]),
-        )
-        print(f"Registered scalable target for {resource_id}")
-
+    # Delete is a single synchronous call - no readiness wait needed.
     if request_type == "Delete":
         try:
             as_client.deregister_scalable_target(
@@ -102,29 +80,54 @@ def handler(event, context):
         except as_client.exceptions.ObjectNotFoundException:
             print("No scalable target found - skipping")
 
+    # For Create/Update there is nothing to kick off here: the endpoint update
+    # is driven by the CloudFormation Endpoint resource. Registration happens in
+    # is_complete once the endpoint reaches InService.
     return {"PhysicalResourceId": f"register-{resource_id}"}
 """
 
-SCALING_POLICY_CODE = """
-import json
-import time
+REGISTER_IS_COMPLETE_CODE = """
+import boto3
+
+as_client = boto3.client("application-autoscaling")
+sm_client = boto3.client("sagemaker")
+
+def handler(event, context):
+    props = event["ResourceProperties"]
+    resource_id = props["ResourceId"]
+    endpoint_name = resource_id.split("/")[1]
+    request_type = event["RequestType"]
+
+    # Deregister already ran synchronously in on_event.
+    if request_type == "Delete":
+        return {"IsComplete": True}
+
+    resp = sm_client.describe_endpoint(EndpointName=endpoint_name)
+    status = resp["EndpointStatus"]
+    print(f"Endpoint {endpoint_name} status: {status}")
+
+    if status == "Failed":
+        raise Exception("Endpoint in Failed state")
+    if status != "InService":
+        return {"IsComplete": False}
+
+    # register_scalable_target is idempotent, so it is safe for the framework to
+    # retry is_complete after a transient failure.
+    as_client.register_scalable_target(
+        ServiceNamespace="sagemaker",
+        ResourceId=resource_id,
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+        MinCapacity=int(props["MinCapacity"]),
+        MaxCapacity=int(props["MaxCapacity"]),
+    )
+    print(f"Registered scalable target for {resource_id}")
+    return {"IsComplete": True}
+"""
+
+ATTACH_SCALING_POLICY_ON_EVENT_CODE = """
 import boto3
 
 client = boto3.client("application-autoscaling")
-
-def wait_for_scalable_target(resource_id):
-    for i in range(30):
-        resp = client.describe_scalable_targets(
-            ServiceNamespace="sagemaker",
-            ResourceIds=[resource_id],
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
-        )
-        if resp.get("ScalableTargets"):
-            print(f"Scalable target found for {resource_id}")
-            return
-        print(f"Waiting for scalable target for {resource_id} - attempt {i + 1}")
-        time.sleep(10)
-    raise Exception("Timed out waiting for scalable target")
 
 def handler(event, context):
     props = event["ResourceProperties"]
@@ -133,18 +136,7 @@ def handler(event, context):
     request_type = event["RequestType"]
     print(f"Request type: {request_type}, PolicyName: {policy_name}")
 
-    if request_type in ("Create", "Update"):
-        wait_for_scalable_target(resource_id)
-        client.put_scaling_policy(
-            PolicyName=policy_name,
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
-            PolicyType="TargetTrackingScaling",
-            TargetTrackingScalingPolicyConfiguration=json.loads(props["ScalingPolicyConfig"]),
-        )
-        print(f"Put scaling policy for {resource_id}")
-
+    # Delete is a single synchronous call - no readiness wait needed.
     if request_type == "Delete":
         try:
             client.delete_scaling_policy(
@@ -157,7 +149,48 @@ def handler(event, context):
         except client.exceptions.ObjectNotFoundException:
             print("No scaling policy found - skipping")
 
+    # For Create/Update the policy is applied in is_complete once the scalable
+    # target is queryable.
     return {"PhysicalResourceId": f"scaling-policy-{resource_id}"}
+"""
+
+ATTACH_SCALING_POLICY_IS_COMPLETE_CODE = """
+import json
+import boto3
+
+client = boto3.client("application-autoscaling")
+
+def handler(event, context):
+    props = event["ResourceProperties"]
+    policy_name = props["PolicyName"]
+    resource_id = props["ResourceId"]
+    request_type = event["RequestType"]
+
+    # Delete already ran synchronously in on_event.
+    if request_type == "Delete":
+        return {"IsComplete": True}
+
+    resp = client.describe_scalable_targets(
+        ServiceNamespace="sagemaker",
+        ResourceIds=[resource_id],
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+    )
+    if not resp.get("ScalableTargets"):
+        print(f"Waiting for scalable target for {resource_id}")
+        return {"IsComplete": False}
+
+    # put_scaling_policy is idempotent, so it is safe for the framework to retry
+    # is_complete after a transient failure.
+    client.put_scaling_policy(
+        PolicyName=policy_name,
+        ServiceNamespace="sagemaker",
+        ResourceId=resource_id,
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+        PolicyType="TargetTrackingScaling",
+        TargetTrackingScalingPolicyConfiguration=json.loads(props["ScalingPolicyConfig"]),
+    )
+    print(f"Put scaling policy for {resource_id}")
+    return {"IsComplete": True}
 """
 
 
@@ -215,7 +248,7 @@ class SagemakerAutoscalingConstruct(Construct):
             ),
         ]
 
-        # Step 1: Deregister scalable target BEFORE endpoint update
+        # Step 1 - Deregister: remove the scalable target BEFORE the Endpoint Update.
         deregister_fn = _lambda.Function(
             self, "DeregisterFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
@@ -237,18 +270,36 @@ class SagemakerAutoscalingConstruct(Construct):
 
         props.endpoint.node.add_dependency(deregister)
 
-        # Step 2: Re-register scalable target AFTER endpoint update
-        register_fn = _lambda.Function(
-            self, "RegisterFn",
+        # Step 3 - Register Scalable Target: register the scalable target AFTER
+        # the Endpoint Update. Uses the async provider pattern (on_event +
+        # is_complete): on_event returns immediately, then the provider's waiter
+        # re-invokes is_complete on query_interval until the endpoint reaches
+        # InService. The wait budget is total_timeout below, so it is not bound
+        # by any single Lambda invocation's timeout.
+        register_on_event_fn = _lambda.Function(
+            self, "RegisterOnEventFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="index.handler",
-            timeout=Duration.minutes(14),
-            code=_lambda.Code.from_inline(REGISTER_CODE),
+            timeout=Duration.minutes(2),
+            code=_lambda.Code.from_inline(REGISTER_ON_EVENT_CODE),
+            initial_policy=autoscaling_policy,
+        )
+
+        register_is_complete_fn = _lambda.Function(
+            self, "RegisterIsCompleteFn",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="index.handler",
+            timeout=Duration.minutes(2),
+            code=_lambda.Code.from_inline(REGISTER_IS_COMPLETE_CODE),
             initial_policy=autoscaling_policy,
         )
 
         register_provider = cr.Provider(
-            self, "RegisterProvider", on_event_handler=register_fn
+            self, "RegisterProvider",
+            on_event_handler=register_on_event_fn,
+            is_complete_handler=register_is_complete_fn,
+            query_interval=Duration.seconds(30),
+            total_timeout=Duration.hours(1),
         )
 
         register = CustomResource(
@@ -264,8 +315,11 @@ class SagemakerAutoscalingConstruct(Construct):
 
         register.node.add_dependency(props.endpoint)
 
-        # Step 3: Put scaling policy AFTER registration
-        scaling_policy_config = {
+        # Step 4 - Attach Scaling Policy: attach the target-tracking policy AFTER
+        # the scalable target is registered. Uses the same async provider pattern:
+        # on_event returns immediately, then the provider's waiter re-invokes
+        # is_complete on query_interval until the scalable target is queryable.
+        attach_scaling_policy_config = {
             "TargetValue": config.target_value,
             "PredefinedMetricSpecification": {
                 "PredefinedMetricType": "SageMakerVariantInvocationsPerInstance",
@@ -274,28 +328,41 @@ class SagemakerAutoscalingConstruct(Construct):
             "ScaleOutCooldown": config.scale_out_cooldown,
         }
 
-        scaling_policy_fn = _lambda.Function(
-            self, "ScalingPolicyFn",
+        attach_scaling_policy_on_event_fn = _lambda.Function(
+            self, "AttachScalingPolicyOnEventFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="index.handler",
-            timeout=Duration.minutes(14),
-            code=_lambda.Code.from_inline(SCALING_POLICY_CODE),
+            timeout=Duration.minutes(2),
+            code=_lambda.Code.from_inline(ATTACH_SCALING_POLICY_ON_EVENT_CODE),
             initial_policy=autoscaling_policy,
         )
 
-        scaling_policy_provider = cr.Provider(
-            self, "ScalingPolicyProvider", on_event_handler=scaling_policy_fn
+        attach_scaling_policy_is_complete_fn = _lambda.Function(
+            self, "AttachScalingPolicyIsCompleteFn",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="index.handler",
+            timeout=Duration.minutes(2),
+            code=_lambda.Code.from_inline(ATTACH_SCALING_POLICY_IS_COMPLETE_CODE),
+            initial_policy=autoscaling_policy,
         )
 
-        scaling_policy = CustomResource(
-            self, "ScalingPolicy",
-            service_token=scaling_policy_provider.service_token,
+        attach_scaling_policy_provider = cr.Provider(
+            self, "AttachScalingPolicyProvider",
+            on_event_handler=attach_scaling_policy_on_event_fn,
+            is_complete_handler=attach_scaling_policy_is_complete_fn,
+            query_interval=Duration.seconds(30),
+            total_timeout=Duration.minutes(15),
+        )
+
+        attach_scaling_policy = CustomResource(
+            self, "AttachScalingPolicy",
+            service_token=attach_scaling_policy_provider.service_token,
             properties={
                 "PolicyName": f"{endpoint_name}-target-tracking",
                 "ResourceId": resource_id,
-                "ScalingPolicyConfig": json.dumps(scaling_policy_config),
+                "ScalingPolicyConfig": json.dumps(attach_scaling_policy_config),
                 "ConfigHash": props.config_hash,
             },
         )
 
-        scaling_policy.node.add_dependency(register)
+        attach_scaling_policy.node.add_dependency(register)

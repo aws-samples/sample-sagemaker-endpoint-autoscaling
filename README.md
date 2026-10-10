@@ -11,10 +11,15 @@ CloudFormation cannot update a SageMaker AI endpoint while a scalable target is 
 Three Lambda-backed custom resources deregister and re-register autoscaling with explicit dependency ordering:
 
 ```
-Deregister ──▶ Endpoint Update ──▶ Register ──▶ Scaling Policy
+Deregister ──▶ Endpoint Update ──▶ Register Scalable Target ──▶ Attach Scaling Policy
 ```
 
-A `ConfigHash` property on each custom resource forces re-invocation whenever a configuration value changes.
+1. **Deregister** — removes the existing scalable target so CloudFormation can update the endpoint.
+2. **Endpoint Update** — CloudFormation updates the endpoint configuration.
+3. **Register Scalable Target** — waits for the endpoint to reach InService, then registers the scalable target.
+4. **Attach Scaling Policy** — waits for the scalable target to be queryable, then applies the target-tracking scaling policy.
+
+**Register Scalable Target** and **Attach Scaling Policy** use the CDK provider's asynchronous completion pattern. Each has an `on_event` handler that returns immediately and an `is_complete` handler that the provider's waiter re-invokes on an interval (every 30 seconds) until the readiness check passes. The wait is bounded by the provider's `total_timeout` (1 hour for Register Scalable Target, 15 minutes for Attach Scaling Policy), so it is not limited by any single Lambda invocation's timeout. The entire sequence runs inside the CloudFormation deployment.
 
 ## Project Structure
 
@@ -57,11 +62,23 @@ aws application-autoscaling describe-scaling-policies \
   --resource-id endpoint/<your-endpoint-name>/variant/AllTraffic
 ```
 
+## Test an update
+
+Change a value in `config/config.yaml` (for example, bump `max_capacity`) and redeploy:
+
+```bash
+uv run cdk deploy InferenceStack
+```
+
+The `ConfigHash` property on each custom resource forces re-invocation whenever a configuration value changes, triggering the full Deregister → Endpoint Update → Register Scalable Target → Attach Scaling Policy sequence.
+
 ## Clean up
 
 ```bash
 uv run cdk destroy InferenceStack
 ```
+
+This tears down the stack including the endpoint and deregisters the scalable target (handled by the **Register Scalable Target** resource's `on_event` Delete branch) and deletes the scaling policy (handled by the **Attach Scaling Policy** resource's `on_event` Delete branch), so no autoscaling resources are left behind.
 
 
 ## Security

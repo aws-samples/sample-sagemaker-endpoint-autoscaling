@@ -55,7 +55,6 @@ def test_construct_creates_three_custom_resources():
         stack, "Autoscaling",
         props=SagemakerAutoscalingProps(
             endpoint=endpoint,
-            endpoint_config=endpoint_config,
             autoscaling=AutoscalingConfig(
                 min_capacity=1,
                 max_capacity=5,

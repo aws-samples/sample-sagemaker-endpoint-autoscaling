@@ -24,11 +24,11 @@ class InferenceStack(Stack):
         asc = config["autoscaling"]
 
         for field in ("endpoint_name", "image", "model_data_url", "instance_type", "initial_instance_count"):
-            if not ep.get(field):
+            if ep.get(field) is None:
                 raise ValueError(f"endpoint.{field} must be set in config/config.yaml")
 
         for field in ("min_capacity", "max_capacity", "target_value", "scale_in_cooldown", "scale_out_cooldown"):
-            if not asc.get(field):
+            if asc.get(field) is None:
                 raise ValueError(f"autoscaling.{field} must be set in config/config.yaml")
 
         # Parse S3 bucket and ECR repo from config for least-privilege scoping
@@ -136,7 +136,6 @@ class InferenceStack(Stack):
             self, "Autoscaling",
             props=SagemakerAutoscalingProps(
                 endpoint=endpoint,
-                endpoint_config=endpoint_config,
                 autoscaling=AutoscalingConfig(
                     min_capacity=asc["min_capacity"],
                     max_capacity=asc["max_capacity"],
