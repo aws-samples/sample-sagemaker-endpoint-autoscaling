@@ -1,4 +1,4 @@
-# SageMaker Endpoint Autoscaling CDK Pattern
+# Orchestrating SageMaker AI endpoint autoscaling with AWS CDK
 
 A reusable AWS CDK (Python) construct that orchestrates Application Auto Scaling deregistration and re-registration during SageMaker AI endpoint updates, solving the deployment deadlock where CloudFormation cannot update an endpoint while autoscaling is registered.
 
